@@ -1,0 +1,53 @@
+---
+title: "Horseshoe Test"
+author: "Stuart Brabbs"
+date: "4/16/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(horseshoe)
+```
+
+Example from package description, 100 simple simulated data points, with first a plot of fitted vs. observed y:
+```{r test 1 fit, include=TRUE, echo=TRUE}
+X <- diag(100)
+beta <- c(rep(0,80), rep(8,20))
+y <- beta + rnorm(100)
+res2 <- horseshoe(y, X, method.tau = "truncatedCauchy", method.sigma = "Jeffreys")
+plot(y, X%*%res2$BetaHat, col = c(rep("black", 80), rep("blue", 20)), ylab = "Fitted y")
+```
+  
+This fit took ~ 10 seconds. We can then get a list of variables selected (1) and not selected (0), and a plot of credible intervals for each variable:  
+
+```{r test 1 select and credible int, include=TRUE, echo=TRUE}
+HS.var.select(res2, y, method = "intervals")
+library(Hmisc)
+xYplot(Cbind(res2$BetaHat, res2$LeftCI, res2$RightCI) ~ 1:100)
+```  
+
+Can also get the posterior mean of $\tau$:  
+```{r test 1 post mean tau, include=TRUE, echo=TRUE}
+res2$TauHat 
+```  
+  
+For a more complex example, with 5000 predictors, 100 observations, and 15 of the 5000 predictors truly associated:
+```{r test 2 fit, include=TRUE, echo=TRUE}
+X <- matrix(rnorm(500000), nrow = 100)
+beta <- c(rep(0,4985), rep(25,15))
+y <- X %*% beta + rnorm(100)
+res2 <- horseshoe(y, X, method.tau = "truncatedCauchy", method.sigma = "Jeffreys")
+plot(y, X%*%res2$BetaHat, ylab = "Fitted y")
+```  
+This fit took ~ 6 minutes. We can again get a list of variables selected (1) and not selected (0), and a plot of credible intervals for each variable:  
+```{r test 2 select and credible int, include=TRUE, echo=TRUE}
+HS.var.select(res2, y, method = "intervals")
+xYplot(Cbind(res2$BetaHat, res2$LeftCI, res2$RightCI) ~ 1:5000)
+```  
+  
+```{r test 2 credible zoom in, include=TRUE, echo=TRUE}
+xYplot(Cbind(res2$BetaHat, res2$LeftCI, res2$RightCI) ~ 4900:5000)
+```  
+
+Only some of the true predictors are appearing as significant - might have coded badly.
