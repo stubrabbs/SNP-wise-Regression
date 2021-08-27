@@ -1,0 +1,313 @@
+---
+title: "SNP-wise Regression Summary"
+author: "Stuart Brabbs"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(StepReg)
+library(susieR)
+library(faux)
+```
+
+```{r log10bf, include=FALSE, echo=FALSE}
+log10BF = function(g,y,sigmaa) {
+  p=dim(g)[2]
+  n=dim(g)[1]
+  if (is.null(dim(g)[2])){
+  g = g - mean(g)
+  y = y - mean(y)
+  n=length(g)
+  X = g
+  invnu = 1/sigmaa^2
+  invOmega = invnu + t(X) %*% X
+  B = (t(X) %*% cbind(y))/invOmega
+  invOmega0 = n
+  return(-0.5*log10(det(invOmega)) + 0.5*log10(invOmega0) - log10(sigmaa) - (n/2)*(log10(t(y- X %*% B) %*% y) - log10(t(y) %*% y)))
+  }
+  else {
+    g = scale(g, scale = FALSE)
+    y = scale(y, scale = FALSE)
+    X = g
+    invnu = diag(rep(1/sigmaa^2, p))
+    invOmega = invnu + t(X) %*% X
+    B = solve(invOmega, t(X) %*% cbind(y))
+    invOmega0 = n
+    return(-0.5*log10(det(invOmega)) + 0.5*log10(invOmega0) - p*log10(sigmaa) - (n/2)*(log10(t(y- X %*% B) %*% y) - log10(t(y) %*% y - n*mean(y)^2)))
+  }
+}
+```
+
+
+```{r weights, include=FALSE,echo=FALSE}
+snpwise_weights = function(X,y,sigmaa,priorpi) {
+  models <- c()
+  log10post <- c()
+  log10bf <- c()
+  
+  #get number of parameters
+  if (is.null(dim(X)[2])) {
+    par <- 1
+  }
+  else {
+    par <- dim(X)[2]
+  }
+  
+  #if no prior input, set to 1/number of parameters
+  if (missing(priorpi)){
+    p <- par
+  }
+  else {
+    p <- 1/priorpi
+  }
+  
+  #get all possible parameter combinations
+  l <- rep(list(0:1),par)
+  combs <- expand.grid(l)
+  m <- dim(combs)[1]
+  
+  #loop through each possible model
+  for (i in c(1:m)){
+    #matrix of values of all variables in model
+    incl <- c()
+    #number of variables in model
+    numincl <- 0
+    
+    #check each variable to see if in model
+    for (j in c(1:par)){
+      if (combs[i,j]==1){
+        incl <- cbind(incl, X[,j])
+        numincl <- numincl + 1
+      }
+    }
+    
+    #if only one variable in model
+    if (numincl==1) {
+      for (k in c(1:par)){
+        if (combs[i,k]==1){
+          varin <- k
+        }
+      }
+      newmod <- paste0("x", varin)
+      
+      #get weight
+      prior <- (1/p)*(1-1/p)^(par-1)
+      lbf <- log10BF(X[,varin], y, sigmaa)
+      log10bf <- c(log10bf, lbf)
+      post <- log10(prior) + lbf
+    }
+    
+    #if multiple variables in model
+    else if (numincl != 0){
+      newmod <- ""
+      for (j in c(1:par)){
+        
+        if (combs[i,j]==1){
+          var <- paste0("x", j)
+          newmod <- paste(newmod, sep =",", var)
+        }
+      }
+      newmod <- sub('.', '', newmod)
+      #get weight
+      prior <- (1/p)^numincl * (1-1/p)^(numincl-1)
+      lbf <- log10BF(incl, y, sigmaa)
+      log10bf <- c(log10bf, lbf)
+      post <- log10(prior) + lbf
+    }
+    
+    #if null model
+    else {
+      log10bf <- c(log10bf, 0)
+      post <- log10((1-1/p)^(p))
+      newmod <- "NULL"
+    }
+    
+    models <- c(models, newmod)
+    #add weight to list
+    log10post <- c(log10post, post)
+  }
+  
+  #find log10 normalizing constant
+  maxlog10post <- max(log10post)
+  log10norm <- maxlog10post + log10(sum(10^(log10post-maxlog10post)))
+  wts <- 10^((log10post)-log10norm)
+  log10weights <- log10(wts)
+  
+  #return dataframe of each model and its posterior weight
+  toreturn <- data.frame(models, log10post, wts, log10norm, log10bf)
+  names(toreturn)[1] <- "models"
+  names(toreturn)[2] <- "log10postscores"
+  names(toreturn)[3] <- "pmps"
+  names(toreturn)[4] <- "log10norm"
+  names(toreturn)[5] <- "log10bayesfactor"
+  
+  return(toreturn)
+}
+```
+
+# Exact Function
+  
+We begin by defining an exact function to calculate the posterior inclusion probabilities (PIPs) of each SNP by cycling through all possible models and using the posterior model probabilities (PMPs) of each model:  
+  
+```{r exact function, include=TRUE, echo=TRUE}
+exact = function(X,y,sigmaa) {
+  snps <- dim(X)[2]
+  nummodels <- 2^snps
+  pips <- rep(0,snps)
+  genweights <- snpwise_weights(X,y,sigmaa)
+  
+  snpnames <- c()
+  for (i in c(1:snps)){
+    newvar <- paste0("x", i)
+    snpnames <- c(snpnames, newvar)
+  }
+  
+  for (i in c(2:nummodels)){
+    ourrow <- genweights[i,]
+    ourmodel <- unlist(strsplit(as.character(ourrow$models), ","))
+    for (j in c(1:snps)){
+      if (snpnames[j] %in% ourmodel){
+        pips[j] <- pips[j] + ourrow$pmps
+      }
+    }
+  }
+  
+  toreturn <- data.frame(snpnames, pips)
+  names(toreturn)[1] <- "snp"
+  names(toreturn)[2] <- "pip"
+  return(toreturn)
+}
+```  
+  
+# Three Body Problem
+  
+We now define the "three-body problem." The basic model of this experiment is a situation where some variable Y depends on variables X1 and X3, which are each highly correlated with a third variable X2, but only correlated with each other as an artifact of their correlation with X2. The true model is thus $Y = \beta_1X_1 + \beta_3X_3$. However, competing models involving X2 are $Y = \beta_2X_2$, $Y = \beta_1X_1 + \beta_2X_2$, and $Y = \beta_2X_2 + \beta_3X_3$. To simulate this data, we assume generate X1 and X3 separately and then generate X2 from the model $X_2 = X_1 + X_3 + \epsilon$, $\epsilon \sim N(0,1)$. We generate an example with n = 100 and 20 different correlations, and run the exact function on it:  
+  
+# SuSiE
+  
+We now run the same data with SuSiE, and compare the resulting PIPs with those of the exact function. SuSiE PIPs are black dots, and exact function PIPs are red crosses:  
+  
+```{r susie, include=TRUE, echo=TRUE}
+set.seed(100)
+sds <- sort(seq(0.02, 0.4, by=0.02), decreasing = TRUE)
+par(mfrow = c(4,5))
+for (i in c(1:20)){
+  x2 <- rnorm(1000)
+  x1 <- x2 + rnorm(1000, sd = sds[i])
+  x3 <- x2 + rnorm(1000, sd = sds[i])
+  X <- cbind(x1, x2, x3)
+  y <- x1 + x3 + rnorm(1000)
+  
+  exactreg <- exact(X,y,0.5)
+  susiereg <- susie(X,y,L=2)
+  
+  title <- paste0("sd = ", sds[i])
+  par(mar = c(3,2,2,3))
+  plot(susiereg$pip, xlab = "Predictor", ylab = "PIP", main = title, pch = 20, ylim = c(0,1))
+  par(new=TRUE)
+  plot(exactreg$pip, ylim = c(0,1), axes = FALSE, pch = 4, col = 2)
+}
+```  
+  
+# SNP-wise Regression  
+  
+We now define SNP-wise regression, where we loop through each SNP, forcing it to be included in the model, do stepwise regression with it included, and add the corresponding PMP to those variables selected. We then run it on the same data from above and compare with the exact model, again with SNP-wise PIPs in black and exact PIPs as red crosses:  
+  
+```{r snpwise, include=TRUE, echo=TRUE}
+snpwisereg = function(X,y,sigmaa, priorpi){
+  normalize <- 0
+  #if no prior input, set to 1/number of parameters
+  if (missing(priorpi)){
+    p <- par
+  }
+  else {
+    p <- 1/priorpi
+  }
+  
+  df <- data.frame(X,y)
+  #get number of variables
+  snps <- dim(X)[2]
+  #vector of variable names
+  snpnames <- c()
+  #vector of variable PIPs
+  pips <- rep(0,snps)
+  
+  for (i in c(1:snps)){
+    colnames(df)[i] <- paste0("x",i)
+    snpnames <- c(snpnames, paste0("x",i))
+  }
+  genweights <- snpwise_weights(X,y,sigmaa,priorpi)
+  
+  #loop through each variable and stepwise regress while forcing to 
+  #include the variable
+  for (i in c(1:snps)){
+    reg <- stepwise(df, y = colnames(df)[snps+1], include = colnames(df)[i], selection = "forward")
+    selected <- reg$variate
+    #filter out occasional duplicates in selected variables
+    selected <- unique(selected)
+    if (selected[1]=="intercept"){
+      selected <- selected[-1]
+    }
+    incl <- ""
+    numincl <- 0
+    
+    #make list of variables selected
+    for (j in c(1:snps)) {
+      if (paste0("x",j) %in% selected) {
+        numincl <- numincl + 1
+        if (incl == "") {
+          incl <- paste0("x",j)
+        }
+        else {
+          toincl <- paste0("x",j)
+          incl <- paste(incl, toincl, sep=",")
+        }
+      }
+    }
+    
+    #filter data to only include selected variables
+    ourrow <- filter(genweights, models == incl)
+    #update normalizing constant
+    normalize <- normalize + ourrow$pmps
+    #add model PMP to included variables' PIPs
+    for (k in c(1:snps)){
+      if (colnames(df)[k] %in% selected){
+        pips[k] <- pips[k] + ourrow$pmps}
+    }
+  }
+  
+  pips <- pips/normalize
+  
+  #return snp names and corresponding PIPs
+  toreturn <- data.frame(snpnames, pips)
+  names(toreturn)[1] <- "snp"
+  names(toreturn)[2] <- "pip"
+  return(toreturn)
+}
+```  
+  
+```{r snpwise compare, include=TRUE, echo=TRUE}
+set.seed(100)
+sds <- sort(seq(0.02, 0.4, by=0.02), decreasing = TRUE)
+par(mfrow = c(4,5))
+for (i in c(1:20)){
+  x2 <- rnorm(1000)
+  x1 <- x2 + rnorm(1000, sd = sds[i])
+  x3 <- x2 + rnorm(1000, sd = sds[i])
+  X <- cbind(x1, x2, x3)
+  y <- x1 + x3 + rnorm(1000)
+  
+  exactreg <- exact(X,y,0.5)
+  snpreg <- snpwisereg(X,y,0.5)
+  
+  title <- paste0("sd = ", sds[i])
+  par(mar = c(3,2,2,3))
+  plot(snpreg$pip, xlab = "Predictor", ylab = "PIP", main = title, pch = 20, ylim = c(0,1))
+  par(new=TRUE)
+  plot(exactreg$pip, ylim = c(0,1), axes = FALSE, pch = 4, col = 2)
+}
+```  
+  
+We can see that, compared to SuSiE, for the three-body problem SNP-wise regression holds up similarly to the exact function for significantly greater correlations.
