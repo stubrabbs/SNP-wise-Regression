@@ -1,0 +1,4 @@
+Finished full algorithm is located in the "Algorithm" folder. Earlier work is in the "Preliminary" and "Weights" folders. Useful functions are in the 
+r file "snpwise_functions.R"
+
+Note that there is a potential redundancy issue in the algorithm - algorithm may count the same model multiple times and inflate PIPs.
